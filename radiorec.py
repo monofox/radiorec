@@ -66,12 +66,36 @@ def read_settings(args):
     return dict(config.items())
 
 
+def parse_icy(metadata):
+    dta = {}
+
+    for var in metadata.split(b';'):
+        if var:
+            varName, varValue = var.decode('utf-8').split('=', 1)
+            # remove the surrounding quote chars: '
+            varValue = varValue.strip()[1:-1]
+            dta[varName] = varValue
+
+    return dta
+
+
 def record_worker(stoprec, streamurl, target_dir, args):
-    conn = urllib.request.urlopen(streamurl)
+    headers = {
+        'User-Agent': 'RadioRec'
+    }
+    if args.icy:
+        headers['Icy-MetaData'] = '1'
+    req = urllib.request.Request(
+        streamurl,
+        headers = headers
+    )
+
+    conn = urllib.request.urlopen(req)
     cur_dt_string = datetime.datetime.now().strftime('%Y-%m-%dT%H_%M_%S')
     filename = target_dir + os.sep + cur_dt_string + "_" + args.station
     if args.name:
         filename += '_' + args.name
+    metaFilename = filename + '.meta'
     content_type = conn.getheader('Content-Type')
     if(content_type == 'audio/mpeg'):
         filename += '.mp3'
@@ -86,6 +110,29 @@ def record_worker(stoprec, streamurl, target_dir, args):
         print('Unknown content type "' + content_type + '". Assuming mp3.')
         filename += '.mp3'
 
+    # check for ICY stream details.
+    icy_header_keys = [ keyName for keyName, keyValue in conn.getheaders() if keyName.lower().startswith('icy-') ]
+
+    # check if there is any metaint header for AAC streams.
+    if args.icy:
+        icyMetaint = int(conn.getheader('icy-metaint')) if 'icy-metaint' in icy_header_keys else None
+    else:
+        icyMetaint = 0
+    readLength = 1024
+    if icyMetaint:
+        readLength = icyMetaint
+
+    if args.icy and icyMetaint:
+        metaTarget = open(metaFilename, 'wb')
+        startDateTime = datetime.datetime.now()
+        if icy_header_keys:
+            for keyName in icy_header_keys:
+                metaLine = '{0}: {1}'.format(keyName, conn.getheader(keyName))
+                verboseprint(metaLine)
+                metaTarget.write((metaLine + os.linesep).encode('utf-8'))
+    else:
+        metaTarget = None
+
     with open(filename, "wb") as target:
         if args.public:
             verboseprint('Apply public write permissions (Linux only)')
@@ -93,8 +140,26 @@ def record_worker(stoprec, streamurl, target_dir, args):
                      stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
         verboseprint('Recording ' + args.station + '...')
         while(not stoprec.is_set() and not conn.closed):
-            target.write(conn.read(1024))
+            target.write(conn.read(readLength))
+            if args.icy and icyMetaint:
+                metalength = ord(conn.read(1)) * 16
+                if metalength > 0:
+                    metadata = conn.read(metalength).replace(b'\x00', b'')
+                    if metadata:
+                        timeOffset = datetime.datetime.now() - startDateTime
+                        for keyName, keyValue in parse_icy(metadata).items():
+                            metaLine = '[{0:0.2f}] {1}: {2}'.format(
+                                            round(timeOffset.total_seconds()/60, 2),
+                                            keyName, keyValue
+                                        )
+                            verboseprint(metaLine)
+                            if metaTarget:
+                                metaTarget.write((metaLine + os.linesep).encode('utf-8'))
+                                metaTarget.flush()
 
+    if args.icy and metaTarget:
+        metaTarget.flush()
+        metaTarget.close()
 
 def record(args):
     settings = read_settings(args)
@@ -157,6 +222,10 @@ def main():
     parser_record.add_argument(
         '-s', '--settings', nargs='?', type=str,
         help="specify alternative location for settings.ini")
+    parser_record.add_argument(
+        '--icy', action='store_true',
+        help="Parse ICY headers and populates in meta file."
+    )
     parser_record.set_defaults(func=record)
     parser_list = subparsers.add_parser('list', help='List all known stations')
     parser_list.set_defaults(func=list)
