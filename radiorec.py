@@ -75,7 +75,7 @@ def record_worker(stoprec, streamurl, target_dir, args):
     content_type = conn.getheader('Content-Type')
     if(content_type == 'audio/mpeg'):
         filename += '.mp3'
-    elif(content_type == 'application/aacp' or content_type == 'audio/aacp'):
+    elif(content_type == 'application/aacp' or content_type == 'audio/aacp' or content_type == 'audio/aac'):
         filename += '.aac'
     elif(content_type == 'application/ogg' or content_type == 'audio/ogg'):
         filename += '.ogg'
